@@ -2,6 +2,8 @@ export class ArrayHelper<T> {
   constructor(private array: T[]) {}
 
   get(index: number): T {
+    const length = this.array.length;
+
     if (index < 0 || index >= length) {
       throw new Error("index out of bounds");
     }

@@ -1,22 +1,36 @@
-import { ArrayFromList } from "../ArrayFromList/ArrayFromList";
 import { ArrayHelper } from "../ArrayHelper/ArrayHelper";
-import { LinkedEmpty, LinkedList } from "../LinkedList/LinkedList";
+import { Reducer } from "../Reducer/Reducer";
 
 function logBase(base: number, n: number) {
   return Math.log(n) / Math.log(base);
 }
 
-function compressNodes<T>(nodes: LinkedList<Node<T>>): LinkedList<Node<T>> {
-  let acc: LinkedList<Node<T>> = new LinkedEmpty<Node<T>>();
-  let remainingNodes = nodes;
+function compressNodes<T>(nodes: Node<T>[]): Node<T>[] {
+  let acc: Node<T>[] = [];
 
-  while (remainingNodes.length() > 0) {
-    const arrayFromList = new ArrayFromList(branchFactor, nodes);
-    acc = acc.cons(new Tree(arrayFromList.array));
-    remainingNodes = arrayFromList.remainsOfList;
+  for (let i = 0; i < nodes.length; i += branchFactor) {
+    acc.push(new Tree(nodes.slice(i, i + branchFactor)));
   }
 
-  return acc.reverse();
+  return acc;
+}
+
+interface ElementInitializer<T> {
+  initialize(index: number): T;
+}
+
+export function initializeArray<T>(
+  length: number,
+  offset: number,
+  elementInitializer: ElementInitializer<T>
+): T[] {
+  const result = new Array(length);
+
+  for (let i = 0; i < length; i++) {
+    result[i] = elementInitializer.initialize(offset + i);
+  }
+
+  return result;
 }
 
 const branchFactor = 32;
@@ -27,6 +41,9 @@ interface Node<T> {
   get(index: number, depth: number): T;
   set(index: number, value: T, depth: number): Node<T>;
   insertTail(tail: T[], index: number, depth: number): Tree<T>;
+  reduceLeft<R>(reducer: Reducer<T, R>, seed: R): R;
+  reduceRight<R>(reducer: Reducer<T, R>, seed: R): R;
+  [Symbol.iterator](): IterableIterator<T>;
 }
 
 class Tree<T> implements Node<T> {
@@ -74,6 +91,26 @@ class Tree<T> implements Node<T> {
       );
     }
   }
+
+  reduceLeft<R>(reducer: Reducer<T, R>, seed: R): R {
+    return this.nodes.reduce(
+      (acc, node) => node.reduceLeft(reducer, acc),
+      seed
+    );
+  }
+
+  reduceRight<R>(reducer: Reducer<T, R>, seed: R): R {
+    return this.nodes.reduce(
+      (acc, node) => node.reduceRight(reducer, acc),
+      seed
+    );
+  }
+
+  *[Symbol.iterator]() {
+    for (const node of this.nodes) {
+      yield* node[Symbol.iterator]();
+    }
+  }
 }
 
 class Leaf<T> implements Node<T> {
@@ -94,21 +131,35 @@ class Leaf<T> implements Node<T> {
   insertTail(tail: T[], index: number, depth: number): Tree<T> {
     return new Tree([this]).insertTail(tail, index, depth - 1);
   }
+
+  reduceLeft<R>(reducer: Reducer<T, R>, seed: R): R {
+    return this.elements.reduce(
+      (acc, element) => reducer.reduce(acc, element),
+      seed
+    );
+  }
+
+  reduceRight<R>(reducer: Reducer<T, R>, seed: R): R {
+    return this.elements.reduceRight(
+      (acc, element) => reducer.reduce(acc, element),
+      seed
+    );
+  }
+
+  [Symbol.iterator]() {
+    return this.elements[Symbol.iterator]();
+  }
 }
 
 class Builder<T> {
-  constructor(
-    readonly tail: T[],
-    readonly nodeList: LinkedList<Node<T>>,
-    readonly nodeListSize: number
-  ) {}
+  constructor(readonly tail: T[], readonly nodeList: Node<T>[]) {}
 
-  toArrayTree(shouldReverseNodeList: boolean) {
-    if (this.nodeListSize === 0) {
+  toArrayTree(): ArrayTree<T> {
+    if (this.nodeList.length === 0) {
       return new ArrayTree(this.tail.length, 1, new Tree([]), this.tail);
     } else {
-      const nodesCount = this.nodeListSize * branchFactor;
-      const tree = this.toTree(nodesCount, shouldReverseNodeList);
+      const nodesCount = this.nodeList.length * branchFactor;
+      const tree = this.toTree();
       const depth = Math.max(
         1,
         Math.floor(logBase(branchFactor, nodesCount - 1))
@@ -123,22 +174,44 @@ class Builder<T> {
     }
   }
 
-  toTree(nodesCount: number, shouldReverseNodeList: boolean): Tree<T> {
-    let nodeListSize = this.nodeListSize;
-    let nodeList = shouldReverseNodeList
-      ? this.nodeList.reverse()
-      : this.nodeList;
+  toTree(): Tree<T> {
+    let nodeList = this.nodeList;
 
-    while (nodeListSize > 1) {
+    while (nodeList.length > 1) {
       nodeList = compressNodes(nodeList);
-      nodeListSize = Math.ceil(nodeListSize / branchFactor);
     }
 
-    return new Tree(new ArrayFromList(branchFactor, nodeList).array);
+    return new Tree(nodeList);
   }
 }
 
-class ArrayTree<T> {
+export class ArrayTree<T> {
+  static empty<T>(): ArrayTree<T> {
+    return new ArrayTree(0, 1, new Tree([]), []);
+  }
+
+  static initialize<T>(
+    length: number,
+    elementInitializer: ElementInitializer<T>
+  ): ArrayTree<T> {
+    if (length <= 0) {
+      return ArrayTree.empty<T>();
+    }
+
+    const tailLength = length % branchFactor;
+    const leavesLength = length - tailLength;
+    const tail = initializeArray(tailLength, leavesLength, elementInitializer);
+
+    let leaves: Leaf<T>[] = [];
+    for (let i = 0; i < leavesLength; i += branchFactor) {
+      leaves.push(
+        new Leaf(initializeArray(branchFactor, i, elementInitializer))
+      );
+    }
+
+    return new Builder(tail, leaves).toArrayTree();
+  }
+
   constructor(
     readonly length: number,
     readonly depth: number,
@@ -146,8 +219,13 @@ class ArrayTree<T> {
     readonly tail: T[]
   ) {}
 
-  getIndexOfTheFirstElementInTail() {
+  private getIndexOfTheFirstElementInTail() {
     return (this.length >>> shiftStep) << shiftStep;
+  }
+
+  *[Symbol.iterator]() {
+    yield* this.tree[Symbol.iterator]();
+    yield* this.tail[Symbol.iterator]();
   }
 
   get(index: number): T | undefined {
@@ -184,7 +262,7 @@ class ArrayTree<T> {
     );
   }
 
-  replaceTail(newTail: T[]): ArrayTree<T> {
+  private replaceTail(newTail: T[]): ArrayTree<T> {
     const originalTailLength = this.tail.length;
     const newTailLength = newTail.length;
 
@@ -227,5 +305,39 @@ class ArrayTree<T> {
     return this.replaceTail(
       new ArrayHelper(this.tail).push(element).getResult()
     );
+  }
+
+  reduceLeft<R>(reducer: Reducer<T, R>, seed: R): R {
+    const reducedNodes = this.tree.nodes.reduce(
+      (acc, node) => node.reduceLeft(reducer, acc),
+      seed
+    );
+
+    return this.tail.reduce(
+      (acc, element) => reducer.reduce(acc, element),
+      reducedNodes
+    );
+  }
+
+  reduceRight<R>(reducer: Reducer<T, R>, seed: R): R {
+    const reducedNodes = this.tree.nodes.reduceRight(
+      (acc, node) => node.reduceRight(reducer, acc),
+      seed
+    );
+
+    return this.tail.reduceRight(
+      (acc, element) => reducer.reduce(acc, element),
+      reducedNodes
+    );
+  }
+
+  toArray(): T[] {
+    const result: T[] = [];
+
+    for (const element of this) {
+      result.push(element);
+    }
+
+    return result;
   }
 }
