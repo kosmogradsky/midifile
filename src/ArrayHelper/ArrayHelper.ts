@@ -5,7 +5,11 @@ export class ArrayHelper<T> {
     const length = this.array.length;
 
     if (index < 0 || index >= length) {
-      throw new Error("index out of bounds");
+      throw new Error(
+        `${(this.array as any)[0].nodes.length} ${
+          this.array.length
+        } index ${index} is out of bounds`
+      );
     }
 
     return this.array[index]!;
@@ -15,7 +19,7 @@ export class ArrayHelper<T> {
     const length = this.array.length;
 
     if (index < 0 || index >= length) {
-      throw new Error("index out of bounds");
+      throw new Error(`index ${index} is out of bounds`);
     }
 
     const result = new Array(length);

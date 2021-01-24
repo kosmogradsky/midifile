@@ -1,18 +1,47 @@
 import { ArrayHelper } from "../ArrayHelper/ArrayHelper";
+import { LinkedEmpty, LinkedList } from "../LinkedList/LinkedList";
 import { Reducer } from "../Reducer/Reducer";
 
 function logBase(base: number, n: number) {
   return Math.log(n) / Math.log(base);
 }
 
-function compressNodes<T>(nodes: Node<T>[]): Node<T>[] {
-  let acc: Node<T>[] = [];
+function compressNodes<T>(nodes: LinkedList<Node<T>>): LinkedList<Node<T>> {
+  let acc: LinkedList<Node<T>> = new LinkedEmpty();
+  let treeNodes: Node<T>[] = [];
 
-  for (let i = 0; i < nodes.length; i += branchFactor) {
-    acc.push(new Tree(nodes.slice(i, i + branchFactor)));
+  for (const node of nodes) {
+    treeNodes.push(node);
+
+    if (treeNodes.length === branchFactor) {
+      acc = acc.cons(new Tree(treeNodes));
+      treeNodes = [];
+    }
   }
 
-  return acc;
+  if (treeNodes.length > 0) {
+    acc = acc.cons(new Tree(treeNodes));
+  }
+
+  return acc.reverse();
+}
+
+function appendN<T>(n: number, dest: T[], source: T[]): T[] {
+  const destLength = dest.length;
+  const itemsToCopy = Math.min(n - destLength, source.length);
+
+  const size = destLength + itemsToCopy;
+  const result = new Array(size);
+
+  for (let i = 0; i < destLength; i++) {
+    result[i] = dest[i];
+  }
+
+  for (let i = 0; i < itemsToCopy; i++) {
+    result[i + destLength] = source[i];
+  }
+
+  return result;
 }
 
 interface ElementInitializer<T> {
@@ -36,6 +65,7 @@ export function initializeArray<T>(
 const branchFactor = 32;
 const shiftStep = Math.ceil(Math.log2(branchFactor));
 const lastStepBits = 0xffffffff >>> (32 - shiftStep);
+const benchmarkDiscoveredAppendPerformanceBorder = branchFactor * 4;
 
 interface Node<T> {
   get(index: number, depth: number): T;
@@ -44,6 +74,7 @@ interface Node<T> {
   reduceLeft<R>(reducer: Reducer<T, R>, seed: R): R;
   reduceRight<R>(reducer: Reducer<T, R>, seed: R): R;
   [Symbol.iterator](): IterableIterator<T>;
+  reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R;
 }
 
 class Tree<T> implements Node<T> {
@@ -111,6 +142,13 @@ class Tree<T> implements Node<T> {
       yield* node[Symbol.iterator]();
     }
   }
+
+  reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R {
+    return this.nodes.reduce(
+      (acc, node) => node.reduceLeaves(reducer, acc),
+      seed
+    );
+  }
 }
 
 class Leaf<T> implements Node<T> {
@@ -149,24 +187,32 @@ class Leaf<T> implements Node<T> {
   [Symbol.iterator]() {
     return this.elements[Symbol.iterator]();
   }
+
+  reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R {
+    return reducer.reduce(seed, this);
+  }
 }
 
 class Builder<T> {
-  constructor(readonly tail: T[], readonly nodeList: Node<T>[]) {}
+  constructor(
+    readonly tail: T[],
+    readonly nodeList: LinkedList<Node<T>>,
+    readonly nodeListLength: number
+  ) {}
 
-  toArrayTree(): ArrayTree<T> {
-    if (this.nodeList.length === 0) {
+  toArrayTree(shouldReverseNodeList: boolean): ArrayTree<T> {
+    if (this.nodeListLength === 0) {
       return new ArrayTree(this.tail.length, 1, new Tree([]), this.tail);
     } else {
-      const nodesCount = this.nodeList.length * branchFactor;
-      const tree = this.toTree();
+      const treeLength = this.nodeListLength * branchFactor;
+      const tree = this.toTree(shouldReverseNodeList);
       const depth = Math.max(
         1,
-        Math.floor(logBase(branchFactor, nodesCount - 1))
+        Math.floor(logBase(branchFactor, treeLength - 1))
       );
 
       return new ArrayTree(
-        this.tail.length + nodesCount,
+        this.tail.length + treeLength,
         depth,
         tree,
         this.tail
@@ -174,14 +220,41 @@ class Builder<T> {
     }
   }
 
-  toTree(): Tree<T> {
-    let nodeList = this.nodeList;
+  toTree(shouldReverseNodeList: boolean): Tree<T> {
+    let nodeList = shouldReverseNodeList
+      ? this.nodeList.reverse()
+      : this.nodeList;
+    let nextNodeListLength = Math.ceil(this.nodeListLength / branchFactor);
 
-    while (nodeList.length > 1) {
+    while (nextNodeListLength > 1) {
       nodeList = compressNodes(nodeList);
+      nextNodeListLength = Math.ceil(nextNodeListLength / branchFactor);
     }
 
-    return new Tree(nodeList);
+    return new Tree(nodeList.toArray());
+  }
+
+  appendHelpBuilder(tail: T[]): Builder<T> {
+    const appended = appendN(branchFactor, this.tail, tail);
+    const notAppended = branchFactor - this.tail.length - tail.length;
+
+    if (notAppended < 0) {
+      return new Builder(
+        tail.slice(notAppended),
+        this.nodeList.cons(new Leaf(appended)),
+        this.nodeListLength + 1
+      );
+    }
+
+    if (notAppended === 0) {
+      return new Builder(
+        [],
+        this.nodeList.cons(new Leaf(appended)),
+        this.nodeListLength + 1
+      );
+    }
+
+    return new Builder(appended, this.nodeList, this.nodeListLength);
   }
 }
 
@@ -202,14 +275,39 @@ export class ArrayTree<T> {
     const leavesLength = length - tailLength;
     const tail = initializeArray(tailLength, leavesLength, elementInitializer);
 
-    let leaves: Leaf<T>[] = [];
-    for (let i = 0; i < leavesLength; i += branchFactor) {
-      leaves.push(
+    let leaves: LinkedList<Leaf<T>> = new LinkedEmpty();
+    for (
+      let i = leavesLength - branchFactor;
+      i > -branchFactor;
+      i -= branchFactor
+    ) {
+      leaves = leaves.cons(
         new Leaf(initializeArray(branchFactor, i, elementInitializer))
       );
     }
 
-    return new Builder(tail, leaves).toArrayTree();
+    return new Builder(tail, leaves, leavesLength / branchFactor).toArrayTree(
+      false
+    );
+  }
+
+  static fromArray<T>(array: T[]): ArrayTree<T> {
+    if (array.length === 0) {
+      return ArrayTree.empty<T>();
+    }
+
+    const tailLength = array.length % branchFactor;
+    const leavesLength = array.length - tailLength;
+    const tail = array.slice(leavesLength);
+
+    let leaves: LinkedList<Leaf<T>> = new LinkedEmpty();
+    for (let i = leavesLength - branchFactor; i > 0; i -= branchFactor) {
+      leaves = leaves.cons(new Leaf(array.slice(i, i + branchFactor)));
+    }
+
+    return new Builder(tail, leaves, leavesLength / branchFactor).toArrayTree(
+      false
+    );
   }
 
   constructor(
@@ -219,7 +317,7 @@ export class ArrayTree<T> {
     readonly tail: T[]
   ) {}
 
-  private getIndexOfTheFirstElementInTail() {
+  private getTailIndex() {
     return (this.length >>> shiftStep) << shiftStep;
   }
 
@@ -233,7 +331,7 @@ export class ArrayTree<T> {
       return undefined;
     }
 
-    if (index >= this.getIndexOfTheFirstElementInTail()) {
+    if (index >= this.getTailIndex()) {
       return new ArrayHelper(this.tail).get(lastStepBits & index);
     }
 
@@ -245,7 +343,7 @@ export class ArrayTree<T> {
       return this;
     }
 
-    if (index >= this.getIndexOfTheFirstElementInTail()) {
+    if (index >= this.getTailIndex()) {
       return new ArrayTree(
         this.length,
         this.depth,
@@ -339,5 +437,82 @@ export class ArrayTree<T> {
     }
 
     return result;
+  }
+
+  isEmpty() {
+    return this.length === 0;
+  }
+
+  append(appendix: ArrayTree<T>): ArrayTree<T> {
+    const border = benchmarkDiscoveredAppendPerformanceBorder;
+
+    if (appendix.length <= border) {
+      const reducer: Reducer<Leaf<T>, ArrayTree<T>> = {
+        reduce(arrayTree, leaf) {
+          return arrayTree.appendHelpTree(leaf.elements);
+        },
+      };
+
+      return appendix.tree
+        .reduceLeaves(reducer, this)
+        .appendHelpTree(appendix.tail);
+    }
+
+    const reducer: Reducer<Leaf<T>, Builder<T>> = {
+      reduce(arrayTree, leaf) {
+        return arrayTree.appendHelpBuilder(leaf.elements);
+      },
+    };
+
+    return appendix.tree
+      .reduceLeaves(reducer, this.toBuilder())
+      .appendHelpBuilder(appendix.tail)
+      .toArrayTree(true);
+  }
+
+  appendHelpTree(elements: T[]): ArrayTree<T> {
+    const appended = appendN(branchFactor, this.tail, elements);
+    const itemsToAppend = elements.length;
+    const notAppended = branchFactor - this.tail.length - itemsToAppend;
+    const newArrayTree = this.replaceTail(appended);
+
+    if (notAppended < 0) {
+      const nextTail = elements.slice(notAppended);
+
+      return newArrayTree.replaceTail(nextTail);
+    }
+
+    return newArrayTree;
+  }
+
+  toBuilder(): Builder<T> {
+    const reducer: Reducer<Leaf<T>, LinkedList<Node<T>>> = {
+      reduce(list, leaf) {
+        return list.cons(leaf);
+      },
+    };
+
+    return new Builder(
+      this.tail,
+      this.tree.nodes.reduce(
+        (acc: LinkedList<Node<T>>, node) => node.reduceLeaves(reducer, acc),
+        new LinkedEmpty<Node<T>>()
+      ),
+      Math.trunc(this.length / branchFactor)
+    );
+  }
+
+  private translateIndex(index: number) {
+    const positiveIndex = index < 0 ? this.length + index : index;
+
+    if (positiveIndex < 0) {
+      return 0;
+    }
+
+    if (positiveIndex > this.length) {
+      return this.length;
+    }
+
+    return positiveIndex;
   }
 }
