@@ -75,6 +75,7 @@ interface Node<T> {
   reduceRight<R>(reducer: Reducer<T, R>, seed: R): R;
   [Symbol.iterator](): IterableIterator<T>;
   reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R;
+  asTree(): Tree<T> | null;
 }
 
 class Tree<T> implements Node<T> {
@@ -149,6 +150,44 @@ class Tree<T> implements Node<T> {
       seed
     );
   }
+
+  asTree(): Tree<T> {
+    return this;
+  }
+
+  hoistTree(oldDepth: number, newDepth: number): Tree<T> {
+    if (oldDepth <= newDepth || this.nodes.length === 0) {
+      return this;
+    }
+
+    const subnode = new ArrayHelper(this.nodes).get(0);
+    const subtree = subnode.asTree();
+
+    if (subtree === null) {
+      return this;
+    }
+
+    return subtree.hoistTree(oldDepth - 1, newDepth);
+  }
+
+  sliceTree(depth: number, endIndex: number): Tree<T> {
+    const endNodeIndex = this.getNodeIndex(depth, endIndex);
+    const subnode = new ArrayHelper(this.nodes).get(endNodeIndex);
+    const subtree = subnode.asTree();
+
+    if (subtree === null) {
+      return new Tree(this.nodes.slice(0, endNodeIndex));
+    }
+
+    const newSubtree = subtree.sliceTree(depth - 1, endIndex);
+    if (newSubtree.nodes.length === 0) {
+      return new Tree(this.nodes.slice(0, endNodeIndex));
+    }
+
+    const newNodes = this.nodes.slice(0, endNodeIndex);
+    newNodes.push(newSubtree);
+    return new Tree(newNodes);
+  }
 }
 
 class Leaf<T> implements Node<T> {
@@ -190,6 +229,10 @@ class Leaf<T> implements Node<T> {
 
   reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R {
     return reducer.reduce(seed, this);
+  }
+
+  asTree(): null {
+    return null;
   }
 }
 
