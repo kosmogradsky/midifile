@@ -184,6 +184,22 @@ export abstract class LinkedList<T> implements Iterable<T> {
   toArray(): T[] {
     return this.reduceLeft(new ToArrayReducer(), []);
   }
+
+  drop(n: number): LinkedList<T> {
+    let result: LinkedList<T> = this;
+
+    for (let i = 0; i < n; i++) {
+      const element = result.asElement();
+
+      if (element === null) {
+        return result;
+      }
+
+      result = element.next;
+    }
+
+    return result;
+  }
 }
 
 export class LinkedEmpty<T> extends LinkedList<T> {

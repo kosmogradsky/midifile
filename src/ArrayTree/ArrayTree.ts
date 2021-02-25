@@ -44,6 +44,10 @@ function appendN<T>(n: number, dest: T[], source: T[]): T[] {
   return result;
 }
 
+function getTailIndex(length: number): number {
+  return (length >>> shiftStep) << shiftStep;
+}
+
 interface ElementInitializer<T> {
   initialize(index: number): T;
 }
@@ -76,6 +80,7 @@ interface Node<T> {
   [Symbol.iterator](): IterableIterator<T>;
   reduceLeaves<R>(reducer: Reducer<Leaf<T>, R>, seed: R): R;
   asTree(): Tree<T> | null;
+  fetchNewTail(endIndex: number, depth: number): T[];
 }
 
 class Tree<T> implements Node<T> {
@@ -188,6 +193,13 @@ class Tree<T> implements Node<T> {
     newNodes.push(newSubtree);
     return new Tree(newNodes);
   }
+
+  fetchNewTail(endIndex: number, depth: number): T[] {
+    const tailNodeIndex = this.getNodeIndex(endIndex, depth);
+    const tailNode = new ArrayHelper(this.nodes).get(tailNodeIndex);
+
+    return tailNode.fetchNewTail(endIndex, depth - 1);
+  }
 }
 
 class Leaf<T> implements Node<T> {
@@ -233,6 +245,10 @@ class Leaf<T> implements Node<T> {
 
   asTree(): null {
     return null;
+  }
+
+  fetchNewTail(endIndex: number): T[] {
+    return this.elements.slice(0, lastStepBits & endIndex);
   }
 }
 
@@ -353,16 +369,14 @@ export class ArrayTree<T> {
     );
   }
 
+  readonly tailIndex = getTailIndex(this.length);
+
   constructor(
     readonly length: number,
     readonly depth: number,
     readonly tree: Tree<T>,
     readonly tail: T[]
   ) {}
-
-  private getTailIndex() {
-    return (this.length >>> shiftStep) << shiftStep;
-  }
 
   *[Symbol.iterator]() {
     yield* this.tree[Symbol.iterator]();
@@ -374,7 +388,7 @@ export class ArrayTree<T> {
       return undefined;
     }
 
-    if (index >= this.getTailIndex()) {
+    if (index >= this.tailIndex) {
       return new ArrayHelper(this.tail).get(lastStepBits & index);
     }
 
@@ -386,7 +400,7 @@ export class ArrayTree<T> {
       return this;
     }
 
-    if (index >= this.getTailIndex()) {
+    if (index >= this.tailIndex) {
       return new ArrayTree(
         this.length,
         this.depth,
@@ -557,5 +571,63 @@ export class ArrayTree<T> {
     }
 
     return positiveIndex;
+  }
+
+  private sliceRight(endIndex: number): ArrayTree<T> {
+    if (endIndex === this.length) {
+      return this;
+    }
+
+    if (endIndex >= this.tailIndex) {
+      return new ArrayTree(
+        endIndex,
+        this.depth,
+        this.tree,
+        this.tail.slice(0, lastStepBits & endIndex)
+      );
+    }
+
+    const newTailIndex = getTailIndex(endIndex);
+    const newDepth = Math.max(
+      1,
+      Math.floor(logBase(branchFactor, Math.max(newTailIndex - 1, 1)))
+    );
+
+    return new ArrayTree(
+      endIndex,
+      newDepth,
+      this.tree
+        .sliceTree(this.depth, newTailIndex)
+        .hoistTree(this.depth, newDepth),
+      this.tree.fetchNewTail(endIndex, this.depth)
+    );
+  }
+
+  private sliceLeft(from: number): ArrayTree<T> {
+    if (from === 0) {
+      return this;
+    }
+
+    if (from >= this.tailIndex) {
+      return new ArrayTree<T>(
+        this.length - from,
+        this.depth,
+        new Tree([]),
+        this.tail.slice(from - this.tailIndex)
+      );
+    }
+
+    const leafNodes = this.tree.reduceLeaves<LinkedList<Leaf<T>>>(
+      {
+        reduce(acc, leaf) {
+          return acc.cons(leaf);
+        },
+      },
+      new LinkedEmpty()
+    );
+    const nodesToDrop = Math.trunc(from / branchFactor);
+    const nodesToInsert = leafNodes.drop(nodesToDrop);
+
+    
   }
 }

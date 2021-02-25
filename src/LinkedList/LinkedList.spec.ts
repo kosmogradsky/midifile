@@ -1,5 +1,5 @@
 import { Mapper } from "../Mapper/Mapper";
-import { LinkedList, SumReducer } from "./LinkedList";
+import { LinkedEmpty, LinkedList, SumReducer } from "./LinkedList";
 
 class NegateMapper implements Mapper<number, number> {
   map(input: number): number {
@@ -16,6 +16,7 @@ class IncrementMapper implements Mapper<number, number> {
 
 function testListOfN(n: number): void {
   describe(`list with ${n} elements`, () => {
+    const zeroHeadedRange = LinkedList.range(0, n);
     const range = LinkedList.range(1, n);
     const rangeWithEachElementIncremented = LinkedList.range(
       1 + increment,
@@ -62,6 +63,24 @@ function testListOfN(n: number): void {
       }
 
       expect(array).toEqual(range.toArray());
+    });
+
+    describe("drop", () => {
+      test("none", () => {
+        expect(range).toEqual(range.drop(0));
+      });
+
+      test("some", () => {
+        expect(new LinkedEmpty().cons(n)).toEqual(zeroHeadedRange.drop(n));
+      });
+
+      test("all", () => {
+        expect(new LinkedEmpty()).toEqual(range.drop(n));
+      });
+
+      test("all+", () => {
+        expect(new LinkedEmpty()).toEqual(range.drop(n + 1));
+      });
     });
   });
 }
